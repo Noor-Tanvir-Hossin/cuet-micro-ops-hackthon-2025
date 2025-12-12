@@ -1,29 +1,58 @@
-# ARCHITECTURE — Long-Running Downloads (Proxy-safe)
+# ARCHITECTURE — Long-Running Download Service (Proxy-Safe Design)
 
-## 1. Problem
-This service simulates downloads that may take ~10–120+ seconds. When deployed behind a reverse proxy (Cloudflare/nginx/ALB), long-running HTTP requests can exceed proxy or client timeouts and result in 504 errors. We need a design that avoids long-lived requests, provides progress visibility, and continues to work even if the user closes the browser tab.
+## 1. Background & Problem Statement
+This service handles file downloads that may take between **10 to 120+ seconds**.  
+When deployed behind common reverse proxies such as **Cloudflare, Nginx, or Load Balancers**, long-running HTTP requests can exceed proxy or browser timeouts, resulting in **504 Gateway Timeout** errors and poor user experience.
 
-## 2. Chosen Approach (Async Jobs + Polling)
-Downloads are handled asynchronously:
+Additionally:
+- Users may close the browser tab while a download is still running
+- Holding server resources for long requests does not scale well
 
-- The client sends a short request to initiate a download.
-- The API immediately returns a `jobId`.
-- A background worker performs the long-running download and packaging.
-- The client periodically polls a status endpoint to check progress.
-- Once complete, the result is downloaded from storage (S3/MinIO), preferably using a pre-signed URL.
+A different architecture is required to safely handle long-running operations.
 
-This approach ensures that all user-facing requests are short and safe behind reverse proxies.
+---
 
-## 3. Architecture Diagram
+## 2. Design Goals
+The architecture aims to:
+
+- Avoid long-lived HTTP requests
+- Remain safe behind reverse proxies
+- Allow downloads to continue even if the client disconnects
+- Provide visibility into download progress
+- Scale reliably under load
+
+---
+
+## 3. Chosen Solution: Asynchronous Jobs with Polling
+
+Instead of performing downloads inside the request lifecycle, the system uses an **asynchronous job-based approach**:
+
+1. The client initiates a download request.
+2. The API immediately responds with a **job identifier (`jobId`)**.
+3. The long-running download is executed in the background.
+4. The client periodically checks the job status.
+5. Once completed, the result is retrieved from object storage.
+
+This keeps all client-facing requests short and proxy-safe.
+
+---
+
+## 4. High-Level Architecture Diagram
 
 ```mermaid
 flowchart LR
-  U[Browser / Frontend] -->|POST /v1/download/initiate| API[Download API]
-  API -->|enqueue job| Q[(Queue)]
-  Q --> W[Worker]
-  W -->|download & package| DL[Download Processing]
-  W -->|upload result| S3[(S3/MinIO - downloads bucket)]
-  W -->|update status| JS[(Job Store)]
-  U -->|GET /v1/download/status (poll)| API
-  API --> JS
-  U -->|GET result or pre-signed URL| S3
+  U[Frontend / Client]
+  A[Download API]
+  Q[Job Queue]
+  W[Background Worker]
+  S[S3 / MinIO Storage]
+  J[Job State Store]
+
+  U --> A
+  A --> Q
+  Q --> W
+  W --> S
+  W --> J
+  U --> A
+  A --> J
+  U --> S
