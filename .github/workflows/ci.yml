@@ -6,46 +6,79 @@ on:
   pull_request:
     branches: [main, master]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  lint:
-    name: Lint
-    runs-on: ubuntu-24.04
-    container:
-      image: node:24-slim
+  lint-test:
+    name: Lint, Format, and E2E Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Run ESLint
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 -p 9001:9001 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            quay.io/minio/minio:latest \
+            server /data --console-address ":9001"
+      - name: Prepare MinIO (bucket + fixture object)
+        run: |
+          wget -q https://dl.min.io/client/mc/release/linux-amd64/mc -O mc
+          chmod +x mc
+          sudo mv mc /usr/local/bin/
+          until mc --insecure alias set myminio http://localhost:9000 minioadmin minioadmin --api S3v4 >/dev/null 2>&1; do
+            echo "Waiting for MinIO..."
+            sleep 1
+          done
+          mc --insecure mb --ignore-existing myminio/downloads
+          # bucket=downloads, key=downloads/70000.zip (matches sanitizeS3Key)
+          echo "fixture" > 70000.zip
+          mc --insecure cp 70000.zip myminio/downloads/downloads/70000.zip
+      - name: Lint
         run: npm run lint
 
-      - name: Check formatting
-        run: npm run format:check
-
-  test:
-    name: E2E Tests
-    runs-on: ubuntu-24.04
-    needs: lint
-    container:
-      image: node:24-slim
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run E2E tests
-        run: npm run test:e2e
+      # ✅ Improved: show exactly what formatting would change
+      - name: Format check (show diff if failed)
+        run: |
+          set -e
+          if npm run format:check; then
+            echo "Format check passed."
+          else
+            echo "Format check failed. Showing diff of what 'npm run format' would change:"
+            npm run format
+            echo "---- git diff (formatting changes) ----"
+            git --no-pager diff
+            exit 1
+          fi
+      - name: Run E2E tests (capture logs)
         env:
+          CI: "true"
           NODE_ENV: development
-          PORT: 3000
-          S3_REGION: us-east-1
-          S3_BUCKET_NAME: ""
+          PORT: "3000"
+
+          S3_REGION: "us-east-1"
+          S3_ENDPOINT: "http://localhost:9000"
+          S3_BUCKET_NAME: "downloads"
+          S3_ACCESS_KEY_ID: "minioadmin"
+          S3_SECRET_ACCESS_KEY: "minioadmin"
           S3_FORCE_PATH_STYLE: "true"
+
           SENTRY_DSN: ""
           OTEL_EXPORTER_OTLP_ENDPOINT: ""
           REQUEST_TIMEOUT_MS: "30000"
@@ -53,23 +86,77 @@ jobs:
           RATE_LIMIT_MAX_REQUESTS: "100"
           CORS_ORIGINS: "*"
 
+          DOWNLOAD_DELAY_ENABLED: "false"
+          DOWNLOAD_DELAY_MIN_MS: "0"
+          DOWNLOAD_DELAY_MAX_MS: "0"
+        run: |
+          set -o pipefail
+          mkdir -p test-results
+          : > test-results/e2e.log
+          npm run test:e2e 2>&1 | tee -a test-results/e2e.log
+        timeout-minutes: 25
+
+      # ✅ New: put a short test summary into GitHub Actions “Summary” tab
+      - name: Write E2E summary
+        if: always()
+        run: |
+          echo "## E2E Test Log (tail)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -n 80 test-results/e2e.log >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - name: Ensure test log exists
+        if: always()
+        run: |
+          mkdir -p test-results
+          [ -f test-results/e2e.log ] || echo "No test output" > test-results/e2e.log
+      - name: Upload E2E logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: test-results/e2e.log
+
+      - name: Stop MinIO
+        if: always()
+        run: |
+          docker logs minio || true
+          docker rm -f minio || true
   build:
-    name: Build Docker Image
-    runs-on: ubuntu-24.04
-    needs: test
+    name: Build Docker image
+    runs-on: ubuntu-latest
+    needs: lint-test
+    permissions:
+      contents: read
+      packages: write
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Docker image
+      - name: Login to GHCR (only on pushes to main/master)
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build (and optionally push) Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile.prod
-          push: false
-          tags: delineate-hackathon-challenge:${{ github.sha }}
+          platforms: linux/amd64
+          push: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
