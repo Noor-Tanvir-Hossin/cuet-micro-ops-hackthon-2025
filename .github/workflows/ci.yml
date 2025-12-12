@@ -53,7 +53,6 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      # ✅ Improved: show exactly what formatting would change
       - name: Format check (show diff if failed)
         run: |
           set -e
@@ -96,7 +95,6 @@ jobs:
           npm run test:e2e 2>&1 | tee -a test-results/e2e.log
         timeout-minutes: 25
 
-      # ✅ New: put a short test summary into GitHub Actions “Summary” tab
       - name: Write E2E summary
         if: always()
         run: |

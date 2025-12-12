@@ -1,10 +1,12 @@
 # ARCHITECTURE — Long-Running Download Service (Proxy-Safe Design)
 
 ## 1. Background & Problem Statement
+
 This service handles file downloads that may take between **10 to 120+ seconds**.  
 When deployed behind common reverse proxies such as **Cloudflare, Nginx, or Load Balancers**, long-running HTTP requests can exceed proxy or browser timeouts, resulting in **504 Gateway Timeout** errors and poor user experience.
 
 Additionally:
+
 - Users may close the browser tab while a download is still running
 - Holding server resources for long requests does not scale well
 
@@ -13,6 +15,7 @@ A different architecture is required to safely handle long-running operations.
 ---
 
 ## 2. Design Goals
+
 The architecture aims to:
 
 - Avoid long-lived HTTP requests
@@ -56,3 +59,4 @@ flowchart LR
   U --> A
   A --> J
   U --> S
+```
