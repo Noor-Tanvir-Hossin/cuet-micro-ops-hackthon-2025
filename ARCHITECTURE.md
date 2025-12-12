@@ -60,33 +60,7 @@ flowchart LR
   A --> J
   U --> S
 ```
-sequenceDiagram
-    autonumber
-    participant FE as Frontend / Client
-    participant API as Download API
-    participant Q as Job Queue (Redis / RabbitMQ)
-    participant BW as Background Worker
-    participant JS as Job State Store (DB / Redis)
-    participant S3 as S3 / MinIO Storage
 
-    FE->>API: 1. Send download request
-    API->>JS: 2. Create job (status: queued)
-    API->>Q: 3. Push job to queue
-    API-->>FE: 4. Return job ID
-
-    Q->>BW: 5. Worker picks job
-    BW->>JS: 6. Update status → processing
-
-    BW->>S3: 7. Fetch input files
-    BW->>BW: 8. Process job
-    BW->>S3: 9. Upload output file
-
-    BW->>JS: 10. Update status → completed
-
-    FE->>JS: 11. Poll job status
-    JS-->>FE: 12. Return status
-
-    FE->>S3: 13. Download final file
 
 ## Why I Chose Option A: Polling Pattern
 
