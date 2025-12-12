@@ -154,7 +154,7 @@ jobs:
           platforms: linux/amd64
           push: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
           tags: |
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/cuet-micro-ops-hackthon-2025:latest
+            ghcr.io/${{ github.repository_owner }}/cuet-micro-ops-hackthon-2025:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
